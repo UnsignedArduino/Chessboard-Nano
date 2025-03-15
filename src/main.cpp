@@ -2,8 +2,6 @@
 #include <EEPROM.h>
 #include <SerialCommands.h>
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-attributes"
 const uint8_t CHESSBOARD_ROWS = 8;
 const uint8_t CHESSBOARD_COLS = 8;
 uint16_t linearHallValues[CHESSBOARD_ROWS][CHESSBOARD_COLS];
@@ -94,9 +92,18 @@ SerialCommands serialCommands(&Serial, serialCommandsBuffer,
                               sizeof(serialCommandsBuffer), "\r\n", " ");
 
 void printMemoryArray(Stream* stream,
-                      uint16_t array[CHESSBOARD_ROWS][CHESSBOARD_COLS]) {
+                      uint16_t array[CHESSBOARD_ROWS][CHESSBOARD_COLS],
+                      uint8_t thisRowOnly = 255, uint8_t thisColOnly = 255) {
   for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
     for (uint8_t col = 0; col < CHESSBOARD_COLS; col++) {
+      if (thisRowOnly != 255 && row != thisRowOnly) {
+        stream->print(F("-    "));
+        continue;
+      }
+      if (thisColOnly != 255 && col != thisColOnly) {
+        stream->print(F("-    "));
+        continue;
+      }
       const uint16_t value = array[row][col];
       stream->print(value);
       if (value < 10) {
@@ -135,6 +142,42 @@ void printEEPROMArray(Stream* stream, uint16_t startAddr) {
     }
     stream->println();
   }
+}
+
+uint16_t saveArrayToEEPROM(uint16_t array[CHESSBOARD_ROWS][CHESSBOARD_COLS],
+                           uint16_t startAddr) {
+  uint16_t bytesUpdated = 0;
+  for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
+    const uint16_t rowAddr =
+      startAddr + row * CHESSBOARD_COLS * sizeof(uint16_t);
+    for (uint8_t col = 0; col < CHESSBOARD_COLS; col++) {
+      const uint16_t value = array[row][col];
+      const uint8_t highValue = value >> 8;
+      const uint8_t lowValue = value & 0xFF;
+      EEPROM.update(rowAddr + col * sizeof(uint16_t), highValue);
+      EEPROM.update(rowAddr + col * sizeof(uint16_t) + 1, lowValue);
+      bytesUpdated += 2;
+    }
+  }
+  return bytesUpdated;
+}
+
+uint16_t loadArrayFromEEPROM(uint16_t array[CHESSBOARD_ROWS][CHESSBOARD_COLS],
+                             uint16_t startAddr) {
+  uint16_t bytesRead = 0;
+  for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
+    const uint16_t rowAddr =
+      startAddr + row * CHESSBOARD_COLS * sizeof(uint16_t);
+    for (uint8_t col = 0; col < CHESSBOARD_COLS; col++) {
+      const uint8_t highValue = EEPROM.read(rowAddr + col * sizeof(uint16_t));
+      const uint8_t lowValue =
+        EEPROM.read(rowAddr + col * sizeof(uint16_t) + 1);
+      const uint16_t value = (highValue << 8) | lowValue;
+      array[row][col] = value;
+      bytesRead += 2;
+    }
+  }
+  return bytesRead;
 }
 
 // print [pieces|raw|presentCalibration|presentCalibrationEEPROM|
@@ -238,7 +281,10 @@ SerialCommand cmdObjPrint("print", cmdPrint);
 //       empty squares respectively.
 //   set|get: Set get the calibration value
 //   row,col|global: The row and column of the square to set the calibration for
-//     or `global` to set the calibration for all squares.
+//     or `global` to set the calibration for all squares. If row is a number
+//     and col is 255 than it will set the calibration for that entire row. If
+//     row is 255 and col is a number than it will set the calibration for that
+//     entire column.
 //   value: The value to set the calibration to. (0 - 1023 or blank to set to
 //     the current reading) Ignored if getting calibration.
 void cmdCalibrate(SerialCommands* sender) {
@@ -308,8 +354,8 @@ void cmdCalibrate(SerialCommands* sender) {
     }
     row = atoi(rowStr);
     col = atoi(colStr);
-    if (row >= CHESSBOARD_ROWS || col >= CHESSBOARD_COLS || row < 0 ||
-        col < 0) {
+    if ((row >= CHESSBOARD_ROWS && row != 255) ||
+        (col >= CHESSBOARD_COLS && col != 255) || row < 0 || col < 0) {
       s->println(F("Invalid position"));
       return;
     }
@@ -339,9 +385,17 @@ void cmdCalibrate(SerialCommands* sender) {
       } else if (strcmp(type, "emptyMargin") == 0) {
         s->print(F("empty calibration margin value"));
       }
-      if (row == 255) {
+      if (row == 255 && col == 255) {
         s->println(F("s"));
         printMemoryArray(s, array);
+      } else if (row == 255) {
+        s->print(F("s for col "));
+        s->println(col);
+        printMemoryArray(s, array, 255, col);
+      } else if (col == 255) {
+        s->print(F("s for row "));
+        s->println(row);
+        printMemoryArray(s, array, row, 255);
       } else {
         s->print(F(" for row "));
         s->print(row);
@@ -362,7 +416,7 @@ void cmdCalibrate(SerialCommands* sender) {
       } else if (strcmp(type, "emptyMargin") == 0) {
         s->print(F("empty calibration margin value"));
       }
-      if (row == 255) {
+      if (row == 255 && col == 255) {
         s->print(F("s to "));
         if (value == -1) {
           s->println(F("the linear hall's current reading"));
@@ -376,6 +430,38 @@ void cmdCalibrate(SerialCommands* sender) {
             } else {
               array[r][c] = value;
             }
+          }
+        }
+      } else if (row == 255) {
+        s->print(F("s for col "));
+        s->print(col);
+        s->print(F(" to "));
+        if (value == -1) {
+          s->println(F("the linear hall's current reading"));
+        } else {
+          s->println(value);
+        }
+        for (uint8_t r = 0; r < CHESSBOARD_ROWS; r++) {
+          if (value == -1) {
+            array[r][col] = linearHallValues[r][col];
+          } else {
+            array[r][col] = value;
+          }
+        }
+      } else if (col == 255) {
+        s->print(F("s for row "));
+        s->print(row);
+        s->print(F(" to "));
+        if (value == -1) {
+          s->println(F("the linear hall's current reading"));
+        } else {
+          s->println(value);
+        }
+        for (uint8_t c = 0; c < CHESSBOARD_COLS; c++) {
+          if (value == -1) {
+            array[row][c] = linearHallValues[row][c];
+          } else {
+            array[row][c] = value;
           }
         }
       } else {
@@ -404,6 +490,36 @@ SerialCommand cmdObjCalibrate("calibrate", cmdCalibrate);
 //     See `calibrate` for the types.
 void cmdCalibrationSaveToEEPROM(SerialCommands* sender) {
   Stream* s = sender->GetSerial();
+
+  char* type = sender->Next();
+  uint16_t bytesUpdated = 0;
+  const static char PRESENT_STRING[] PROGMEM = "present";
+  const static char EMPTY_STRING[] PROGMEM = "empty";
+  const static char PRESENT_MARGIN_STRING[] PROGMEM = "presentMargin";
+  const static char EMPTY_MARGIN_STRING[] PROGMEM = "emptyMargin";
+  if (strcmp_P(type, PRESENT_STRING) == 0) {
+    s->println(F("Saving present calibration values to EEPROM"));
+    bytesUpdated = saveArrayToEEPROM(linearHallPresentValues,
+                                     PRESENT_CALIBRATION_EEPROM_START_ADDR);
+  } else if (strcmp_P(type, EMPTY_STRING) == 0) {
+    s->println(F("Saving empty calibration values to EEPROM"));
+    bytesUpdated = saveArrayToEEPROM(linearHallEmptyValues,
+                                     EMPTY_CALIBRATION_EEPROM_START_ADDR);
+  } else if (strcmp_P(type, PRESENT_MARGIN_STRING) == 0) {
+    s->println(F("Saving present calibration margin values to EEPROM"));
+    bytesUpdated = saveArrayToEEPROM(
+      linearHallPresentMargins, PRESENT_CALIBRATION_MARGIN_EEPROM_START_ADDR);
+  } else if (strcmp_P(type, EMPTY_MARGIN_STRING) == 0) {
+    s->println(F("Saving empty calibration margin values to EEPROM"));
+    bytesUpdated = saveArrayToEEPROM(
+      linearHallEmptyMargins, EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR);
+  } else {
+    s->print(F("Invalid calibration type: "));
+    s->println(type);
+    return;
+  }
+  s->print(F("Bytes updated: "));
+  s->println(bytesUpdated);
 }
 SerialCommand cmdObjCalibrationSaveToEEPROM("calibrationSaveToEEPROM",
                                             cmdCalibrationSaveToEEPROM);
@@ -415,6 +531,36 @@ SerialCommand cmdObjCalibrationSaveToEEPROM("calibrationSaveToEEPROM",
 //     See `calibrate` for the types.
 void cmdCalibrationLoadFromEEPROM(SerialCommands* sender) {
   Stream* s = sender->GetSerial();
+
+  char* type = sender->Next();
+  uint16_t bytesRead = 0;
+  const static char PRESENT_STRING[] PROGMEM = "present";
+  const static char EMPTY_STRING[] PROGMEM = "empty";
+  const static char PRESENT_MARGIN_STRING[] PROGMEM = "presentMargin";
+  const static char EMPTY_MARGIN_STRING[] PROGMEM = "emptyMargin";
+  if (strcmp_P(type, PRESENT_STRING) == 0) {
+    s->println(F("Loading present calibration values from EEPROM"));
+    bytesRead = loadArrayFromEEPROM(linearHallPresentValues,
+                                    PRESENT_CALIBRATION_EEPROM_START_ADDR);
+  } else if (strcmp_P(type, EMPTY_STRING) == 0) {
+    s->println(F("Loading empty calibration values from EEPROM"));
+    bytesRead = loadArrayFromEEPROM(linearHallEmptyValues,
+                                    EMPTY_CALIBRATION_EEPROM_START_ADDR);
+  } else if (strcmp_P(type, PRESENT_MARGIN_STRING) == 0) {
+    s->println(F("Loading present calibration margin values from EEPROM"));
+    bytesRead = loadArrayFromEEPROM(
+      linearHallPresentMargins, PRESENT_CALIBRATION_MARGIN_EEPROM_START_ADDR);
+  } else if (strcmp_P(type, EMPTY_MARGIN_STRING) == 0) {
+    s->println(F("Loading empty calibration margin values from EEPROM"));
+    bytesRead = loadArrayFromEEPROM(linearHallEmptyMargins,
+                                    EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR);
+  } else {
+    s->print(F("Invalid calibration type: "));
+    s->println(type);
+    return;
+  }
+  s->print(F("Bytes read: "));
+  s->println(bytesRead);
 }
 SerialCommand cmdObjCalibrationLoadFromEEPROM("calibrationLoadFromEEPROM",
                                               cmdCalibrationLoadFromEEPROM);
@@ -444,5 +590,3 @@ void loop() {
 
   serialCommands.ReadSerial();
 }
-
-#pragma clang diagnostic pop
