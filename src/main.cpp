@@ -5,7 +5,7 @@
 const uint8_t CHESSBOARD_ROWS = 8;
 const uint8_t CHESSBOARD_COLS = 8;
 uint16_t linearHallValues[CHESSBOARD_ROWS][CHESSBOARD_COLS];
-uint8_t pieces[CHESSBOARD_ROWS]; // Bitmask of pieces present on each row
+uint64_t pieces = 0;
 char piecesDebug[CHESSBOARD_ROWS][CHESSBOARD_COLS]; // For debugging
 uint16_t linearHallPresentValues[CHESSBOARD_ROWS][CHESSBOARD_COLS];
 uint16_t linearHallEmptyValues[CHESSBOARD_ROWS][CHESSBOARD_COLS];
@@ -21,17 +21,18 @@ const uint8_t DETECTION_METHOD_CHECK_EITHER = 3;
 
 const uint16_t arraySizeInEEPROM =
   CHESSBOARD_ROWS * CHESSBOARD_COLS * sizeof(uint16_t);
-const uint16_t PRESENT_CALIBRATION_EEPROM_START_ADDR = 0;
-const uint16_t EMPTY_CALIBRATION_EEPROM_START_ADDR =
+
+const uint16_t PRESENT_CALIBRATION_EEPROM_START_ADDR = 0; // 0 - 127
+const uint16_t EMPTY_CALIBRATION_EEPROM_START_ADDR =      // 128 - 255
   PRESENT_CALIBRATION_EEPROM_START_ADDR + arraySizeInEEPROM;
-const uint16_t PRESENT_CALIBRATION_MARGIN_EEPROM_START_ADDR =
+const uint16_t PRESENT_CALIBRATION_MARGIN_EEPROM_START_ADDR = // 256 - 383
   EMPTY_CALIBRATION_EEPROM_START_ADDR + arraySizeInEEPROM;
-const uint16_t EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR =
+const uint16_t EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR = // 384 - 511
   PRESENT_CALIBRATION_MARGIN_EEPROM_START_ADDR + arraySizeInEEPROM;
 
-const uint16_t AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR =
-  EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR + sizeof(autoLoadCalibration);
-const uint16_t DETECTION_METHOD_EEPROM_START_ADDR =
+const uint16_t AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR = // 512
+  EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR + arraySizeInEEPROM;
+const uint16_t DETECTION_METHOD_EEPROM_START_ADDR = // 513
   AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR + sizeof(detectionMethod);
 
 const uint8_t EXPANDERS_NUM = CHESSBOARD_ROWS;
@@ -57,7 +58,7 @@ void linearHallsBegin() {
     pinMode(i, INPUT);
   }
   memset(linearHallValues, 0, sizeof(linearHallValues));
-  memset(pieces, 0, sizeof(pieces));
+  pieces = 0;
   memset(linearHallPresentValues, 0, sizeof(linearHallPresentValues));
   memset(linearHallEmptyValues, 0, sizeof(linearHallEmptyValues));
   memset(linearHallPresentMargins, 0, sizeof(linearHallPresentMargins));
@@ -77,7 +78,7 @@ void linearHallsRead() {
 }
 
 void linearHallsUpdatePieces() {
-  memset(pieces, 0, sizeof(pieces));
+  pieces = 0;
   memset(piecesDebug, ' ', sizeof(piecesDebug));
   for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
     for (uint8_t col = 0; col < CHESSBOARD_COLS; col++) {
@@ -94,23 +95,25 @@ void linearHallsUpdatePieces() {
         minEmptyValue <= currentValue && currentValue <= maxEmptyValue;
       const bool isPresent =
         minPresentValue <= currentValue && currentValue <= maxPresentValue;
+#define SET_THIS_BIT pieces |= (1ULL << (row * CHESSBOARD_COLS + col));
       if (detectionMethod == DETECTION_METHOD_CHECK_BOTH) {
         if (isEmpty && isPresent) {
-          pieces[row] |= 1 << col;
+          SET_THIS_BIT
         }
       } else if (detectionMethod == DETECTION_METHOD_CHECK_NOT_EMPTY) {
         if (!isEmpty) {
-          pieces[row] |= 1 << col;
+          SET_THIS_BIT
         }
       } else if (detectionMethod == DETECTION_METHOD_CHECK_PRESENT) {
         if (isPresent) {
-          pieces[row] |= 1 << col;
+          SET_THIS_BIT
         }
       } else /*if (detectionMethod == DETECTION_METHOD_CHECK_EITHER)*/ {
         if (!isEmpty || isPresent) {
-          pieces[row] |= 1 << col;
+          SET_THIS_BIT
         }
       }
+#undef SET_THIS_BIT
       // For debugging values
       //                    Number line
       // <-------[---empty---]-------[---present---]------->
@@ -294,7 +297,8 @@ void cmdPrint(SerialCommands* sender) {
     s->println(F("Printing pieces"));
     for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
       for (uint8_t col = 0; col < CHESSBOARD_COLS; col++) {
-        s->print((pieces[row] & (1 << col)) ? "O " : ". ");
+        const bool isPresent = pieces & (1ULL << (row * CHESSBOARD_COLS + col));
+        s->print(isPresent ? F("0 ") : F(". "));
         //        s->print(pieces[row], BIN);
       }
       s->println();
@@ -811,6 +815,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
   Serial.println(F("Chessboard controller starting"));
+
+  delay(500);
 
   Serial.println(F("Loading settings from EEPROM"));
   loadSettings();
