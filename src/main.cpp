@@ -5,6 +5,7 @@
 const uint8_t CHESSBOARD_ROWS = 8;
 const uint8_t CHESSBOARD_COLS = 8;
 uint16_t linearHallValues[CHESSBOARD_ROWS][CHESSBOARD_COLS];
+uint64_t previousPieces = 0;
 uint64_t pieces = 0;
 char piecesDebug[CHESSBOARD_ROWS][CHESSBOARD_COLS]; // For debugging
 uint16_t linearHallPresentValues[CHESSBOARD_ROWS][CHESSBOARD_COLS];
@@ -18,6 +19,7 @@ const uint8_t DETECTION_METHOD_CHECK_BOTH = 0;
 const uint8_t DETECTION_METHOD_CHECK_NOT_EMPTY = 1;
 const uint8_t DETECTION_METHOD_CHECK_PRESENT = 2;
 const uint8_t DETECTION_METHOD_CHECK_EITHER = 3;
+bool printOnBoardChange = false;
 
 const uint16_t arraySizeInEEPROM =
   CHESSBOARD_ROWS * CHESSBOARD_COLS * sizeof(uint16_t);
@@ -33,7 +35,9 @@ const uint16_t EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR = // 384 - 511
 const uint16_t AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR = // 512
   EMPTY_CALIBRATION_MARGIN_EEPROM_START_ADDR + arraySizeInEEPROM;
 const uint16_t DETECTION_METHOD_EEPROM_START_ADDR = // 513
-  AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR + sizeof(detectionMethod);
+  AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR + sizeof(autoLoadCalibration);
+const uint16_t PRINT_ON_BOARD_CHANGE_EEPROM_START_ADDR = // 514
+  DETECTION_METHOD_EEPROM_START_ADDR + sizeof(detectionMethod);
 
 const uint8_t EXPANDERS_NUM = CHESSBOARD_ROWS;
 const uint8_t EXPANDERS_A_PIN = 2;
@@ -77,7 +81,8 @@ void linearHallsRead() {
   }
 }
 
-void linearHallsUpdatePieces() {
+bool linearHallsUpdatePieces() {
+  previousPieces = pieces;
   pieces = 0;
   memset(piecesDebug, ' ', sizeof(piecesDebug));
   for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
@@ -134,21 +139,34 @@ void linearHallsUpdatePieces() {
       }
     }
   }
+  return previousPieces != pieces;
 }
 
 void loadSettings() {
   EEPROM.get(AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR, autoLoadCalibration);
   EEPROM.get(DETECTION_METHOD_EEPROM_START_ADDR, detectionMethod);
+  EEPROM.get(PRINT_ON_BOARD_CHANGE_EEPROM_START_ADDR, printOnBoardChange);
 }
 
 void saveSettings() {
   EEPROM.put(AUTO_LOAD_CALIBRATION_EEPROM_START_ADDR, autoLoadCalibration);
   EEPROM.put(DETECTION_METHOD_EEPROM_START_ADDR, detectionMethod);
+  EEPROM.put(PRINT_ON_BOARD_CHANGE_EEPROM_START_ADDR, printOnBoardChange);
 }
 
 char serialCommandsBuffer[64];
 SerialCommands serialCommands(&Serial, serialCommandsBuffer,
                               sizeof(serialCommandsBuffer), "\r\n", " ");
+
+void printBitboard(Stream* stream, uint64_t bitboard) {
+  for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
+    for (uint8_t col = 0; col < CHESSBOARD_COLS; col++) {
+      const bool isPresent = bitboard & (1ULL << (row * CHESSBOARD_COLS + col));
+      stream->print(isPresent ? F("0 ") : F(". "));
+    }
+    stream->println();
+  }
+}
 
 void printMemoryArray(Stream* stream,
                       uint16_t array[CHESSBOARD_ROWS][CHESSBOARD_COLS],
@@ -295,14 +313,7 @@ void cmdPrint(SerialCommands* sender) {
   bool printedSomething = false;
   if (type == nullptr || strcmp_P(type, PIECES_STRING) == 0 || printAll) {
     s->println(F("Printing pieces"));
-    for (uint8_t row = 0; row < CHESSBOARD_ROWS; row++) {
-      for (uint8_t col = 0; col < CHESSBOARD_COLS; col++) {
-        const bool isPresent = pieces & (1ULL << (row * CHESSBOARD_COLS + col));
-        s->print(isPresent ? F("0 ") : F(". "));
-        //        s->print(pieces[row], BIN);
-      }
-      s->println();
-    }
+    printBitboard(s, pieces);
     printedSomething = true;
   }
   if (strcmp_P(type, PIECES_DEBUG_STRING) == 0 || printAll) {
@@ -718,6 +729,9 @@ SerialCommand cmdObjCalibrationLoadFromEEPROM("calibrationLoadFromEEPROM",
 //       1: Check for the square to be not empty.
 //       2: Check for the square to be present.
 //       3: Check for either the square to be not empty or present.
+//     "PRINT_ON_BOARD_CHANGE"
+//       0: Don't automatically print the board state when it changes.
+//       1: Automatically print the board state when it changes.
 //   value: The value to set the setting to. Ignored if getting setting.
 void cmdSettings(SerialCommands* sender) {
   Stream* s = sender->GetSerial();
@@ -751,6 +765,8 @@ void cmdSettings(SerialCommands* sender) {
   const static char AUTO_LOAD_CALIBRATION_STRING[] PROGMEM =
     "AUTO_LOAD_CALIBRATION";
   const static char DETECTION_METHOD_STRING[] PROGMEM = "DETECTION_METHOD";
+  const static char PRINT_ON_BOARD_CHANGE_STRING[] PROGMEM =
+    "PRINT_ON_BOARD_CHANGE";
 
   if (act == ACT_GET) {
     if (strcmp_P(key, AUTO_LOAD_CALIBRATION_STRING) == 0) {
@@ -759,6 +775,9 @@ void cmdSettings(SerialCommands* sender) {
     } else if (strcmp_P(key, DETECTION_METHOD_STRING) == 0) {
       s->println(F("Printing DETECTION_METHOD setting value"));
       s->println(detectionMethod);
+    } else if (strcmp_P(key, PRINT_ON_BOARD_CHANGE_STRING) == 0) {
+      s->println(F("Printing PRINT_ON_BOARD_CHANGE setting value"));
+      s->println(printOnBoardChange);
     } else {
       s->print(F("Invalid key: "));
       s->println(key);
@@ -771,6 +790,8 @@ void cmdSettings(SerialCommands* sender) {
       keyAsInt = 0;
     } else if (strcmp_P(key, DETECTION_METHOD_STRING) == 0) {
       keyAsInt = 1;
+    } else if (strcmp_P(key, PRINT_ON_BOARD_CHANGE_STRING) == 0) {
+      keyAsInt = 2;
     } else {
       s->print(F("Invalid key: "));
       s->println(key);
@@ -800,6 +821,14 @@ void cmdSettings(SerialCommands* sender) {
     Serial.print(F("Setting DETECTION_METHOD to "));
     Serial.println(value);
     detectionMethod = value;
+  } else if (keyAsInt == 2) {
+    if (value != 0 && value != 1) {
+      s->println(F("Invalid value for PRINT_ON_BOARD_CHANGE"));
+      return;
+    }
+    Serial.print(F("Setting PRINT_ON_BOARD_CHANGE to "));
+    Serial.println(value);
+    printOnBoardChange = value;
   }
   saveSettings();
 }
@@ -861,7 +890,11 @@ void setup() {
 
 void loop() {
   linearHallsRead();
-  linearHallsUpdatePieces();
+  const bool boardChanged = linearHallsUpdatePieces();
+  if (printOnBoardChange && boardChanged) {
+    Serial.println(F("Board changed:"));
+    printBitboard(&Serial, pieces);
+  }
 
   serialCommands.ReadSerial();
 }
