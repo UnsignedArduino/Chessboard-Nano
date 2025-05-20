@@ -407,7 +407,7 @@ void cmdCalibrate(SerialCommands* sender) {
     return;
   }
 
-  uint16_t(*array)[CHESSBOARD_COLS];
+  uint16_t (*array)[CHESSBOARD_COLS];
   const static char PRESENT_STRING[] PROGMEM = "present";
   const static char EMPTY_STRING[] PROGMEM = "empty";
   const static char PRESENT_MARGIN_STRING[] PROGMEM = "presentMargin";
@@ -840,7 +840,7 @@ void cmdUnrecognized(SerialCommands* sender, const char* cmd) {
 }
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
   Serial.println(F("Chessboard controller starting"));
